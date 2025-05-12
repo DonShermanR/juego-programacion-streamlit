@@ -8,6 +8,42 @@ import pandas as pd
 MAX_JUGADORES = 3
 DB_NAME = "resultados.db"
 
+# ----------------- FUNCIONES DE FECHA MEJORADAS -----------------
+def safe_parse_datetime(dt_str):
+    """Analiza una cadena de fecha de manera segura con múltiples formatos"""
+    if dt_str is None:
+        return None
+    if isinstance(dt_str, datetime):
+        return dt_str
+    
+    # Formatos a probar (ordenados de más específico a más general)
+    formats = [
+        "%Y-%m-%d %H:%M:%S.%f",  # Con microsegundos
+        "%Y-%m-%d %H:%M:%S",      # Sin microsegundos
+        "%Y-%m-%d %H:%M",         # Sin segundos
+        "%Y-%m-%d"                # Solo fecha
+    ]
+    
+    for fmt in formats:
+        try:
+            return datetime.strptime(dt_str, fmt)
+        except (ValueError, TypeError):
+            continue
+    
+    # Si todos los formatos fallan, devuelve None y registra el error
+    st.error(f"Formato de fecha no reconocido: {dt_str}")
+    return None
+
+def format_timedelta(td):
+    """Formatea un timedelta a HH:MM:SS"""
+    if td is None:
+        return "00:00:00"
+    total_seconds = int(td.total_seconds())
+    hours = total_seconds // 3600
+    minutes = (total_seconds % 3600) // 60
+    seconds = total_seconds % 60
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
 # ----------------- INICIALIZAR BASE DE DATOS -----------------
 def init_db():
     conn = sqlite3.connect(DB_NAME)
@@ -26,7 +62,7 @@ def init_db():
             id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
             enunciado TEXT NOT NULL,
             duracion INTEGER NOT NULL,
-            tiempo_inicio DATETIME,
+            tiempo_inicio TEXT,  # Almacenado como texto ISO
             activo BOOLEAN DEFAULT 0
         )
     """)
@@ -35,61 +71,28 @@ def init_db():
     conn.close()
 
 # ----------------- FUNCIONES DE BASE DE DATOS -----------------
-def insertar_resultado(nombre):
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    
-    cursor.execute("SELECT COUNT(*) FROM resultados")
-    count = cursor.fetchone()[0]
-    
-    if count < MAX_JUGADORES:
-        cursor.execute(
-            "INSERT INTO resultados (nombre) VALUES (?)",
-            (nombre,)
-        )
-        conn.commit()
-        resultado = True
-    else:
-        resultado = False
-    
-    conn.close()
-    return resultado
-
 def obtener_resultados():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     
-    cursor.execute("""
+    cursor.execute(f"""
         SELECT nombre, timestamp 
         FROM resultados 
         ORDER BY timestamp ASC 
-        LIMIT ?
-    """, (MAX_JUGADORES,))
+        LIMIT {MAX_JUGADORES}
+    """)
     
     resultados = cursor.fetchall()
     conn.close()
-    return resultados
-
-def reiniciar_resultados():
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM resultados")
-    conn.commit()
-    conn.close()
-
-def iniciar_juego(enunciado, duracion):
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
     
-    cursor.execute("""
-        INSERT OR REPLACE INTO juego_activo 
-        (id, enunciado, duracion, tiempo_inicio, activo)
-        VALUES (1, ?, ?, ?, 1)
-    """, (enunciado, duracion, datetime.now()))
+    # Convertir las fechas de manera segura
+    parsed_results = []
+    for nombre, timestamp in resultados:
+        parsed_time = safe_parse_datetime(timestamp)
+        if parsed_time is not None:
+            parsed_results.append((nombre, parsed_time))
     
-    conn.commit()
-    conn.close()
-    reiniciar_resultados()
+    return parsed_results
 
 def obtener_estado_juego():
     conn = sqlite3.connect(DB_NAME)
@@ -97,44 +100,37 @@ def obtener_estado_juego():
     
     cursor.execute("SELECT enunciado, duracion, tiempo_inicio FROM juego_activo WHERE activo = 1")
     juego = cursor.fetchone()
-    
     conn.close()
-    return juego
+    
+    if juego:
+        enunciado, duracion, tiempo_inicio_str = juego
+        tiempo_inicio = safe_parse_datetime(tiempo_inicio_str)
+        return (enunciado, duracion, tiempo_inicio)
+    return None
 
-def finalizar_juego():
+def iniciar_juego(enunciado, duracion):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     
-    cursor.execute("UPDATE juego_activo SET activo = 0 WHERE id = 1")
+    # Usamos formato ISO para almacenar la fecha
+    tiempo_inicio_iso = datetime.now().isoformat()
+    
+    cursor.execute("""
+        INSERT OR REPLACE INTO juego_activo 
+        (id, enunciado, duracion, tiempo_inicio, activo)
+        VALUES (1, ?, ?, ?, 1)
+    """, (enunciado, duracion, tiempo_inicio_iso))
+    
     conn.commit()
     conn.close()
+    reiniciar_resultados()
 
-# ----------------- INICIALIZAR SESSION STATE -----------------
-def init_session_state():
-    if "pantalla" not in st.session_state:
-        st.session_state.pantalla = None
-    
-    # Obtener estado del juego de la base de datos
-    juego = obtener_estado_juego()
-    
-    if juego:
-        st.session_state.problema = juego[0]
-        st.session_state.duracion = juego[1]
-        st.session_state.tiempo_inicio = datetime.strptime(juego[2], "%Y-%m-%d %H:%M:%S.%f") if isinstance(juego[2], str) else juego[2]
-    else:
-        st.session_state.problema = ""
-        st.session_state.duracion = 5
-        st.session_state.tiempo_inicio = None
-
-# ----------------- PANTALLA DE INICIO -----------------
+# ----------------- PANTALLA DE INICIO MEJORADA -----------------
 def mostrar_inicio():
     st.title("🏆 Juego de Programación Competitiva")
     
     st.markdown("""
         <style>
-            .big-font {
-                font-size:18px !important;
-            }
             .result-table {
                 width: 100%;
                 border-collapse: collapse;
@@ -148,19 +144,15 @@ def mostrar_inicio():
                 padding: 8px;
                 border-bottom: 1px solid #ddd;
             }
-            .locked {
-                color: #ff4b4b;
-                font-weight: bold;
-            }
         </style>
     """, unsafe_allow_html=True)
     
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("👨‍🏫 Modo Docente", key="docente_btn", help="Configurar el juego"):
+        if st.button("👨‍🏫 Modo Docente", key="docente_btn"):
             st.session_state.pantalla = "docente"
     with col2:
-        if st.button("👩‍🎓 Modo Estudiante", key="estudiante_btn", help="Participar en el juego"):
+        if st.button("👩‍🎓 Modo Estudiante", key="estudiante_btn"):
             st.session_state.pantalla = "estudiante"
     
     # Mostrar últimos resultados si existen
@@ -179,85 +171,25 @@ def mostrar_inicio():
         """
         
         for i, (nombre, timestamp) in enumerate(resultados, start=1):
-            tiempo = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S.%f") if isinstance(timestamp, str) else timestamp
-            tiempo_str = tiempo.strftime("%H:%M:%S")
+            tiempo_str = timestamp.strftime("%H:%M:%S") if timestamp else "N/A"
+            
+            medal = ""
+            if i == 1: medal = "🥇"
+            elif i == 2: medal = "🥈"
+            elif i == 3: medal = "🥉"
             
             html += f"""
             <tr>
-                <td>{i}º</td>
+                <td>{medal} {i}º</td>
                 <td>{nombre}</td>
                 <td>{tiempo_str}</td>
             </tr>
             """
-            
-            if i >= MAX_JUGADORES:
-                break
         
         html += "</table>"
         st.markdown(html, unsafe_allow_html=True)
 
-# ----------------- MODO DOCENTE -----------------
-def modo_docente():
-    st.header("👨‍🏫 Panel del Docente")
-    
-    tab1, tab2 = st.tabs(["⚙️ Configurar Juego", "📊 Resultados"])
-    
-    with tab1:
-        st.subheader("Configuración del Juego")
-        
-        enunciado = st.text_area(
-            "Enunciado del problema", 
-            st.session_state.problema, 
-            height=150,
-            placeholder="Describa el problema de programación..."
-        )
-        
-        duracion = st.slider(
-            "⏳ Duración (minutos)", 
-            1, 120, 
-            st.session_state.duracion
-        )
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("🟢 Iniciar Juego", type="primary"):
-                if not enunciado.strip():
-                    st.error("Debe ingresar un enunciado para el problema.")
-                else:
-                    iniciar_juego(enunciado, duracion)
-                    st.session_state.problema = enunciado
-                    st.session_state.duracion = duracion
-                    st.session_state.tiempo_inicio = datetime.now()
-                    st.success("✅ Juego iniciado correctamente!")
-                    st.balloons()
-        
-        with col2:
-            if st.button("⏹ Detener Juego"):
-                finalizar_juego()
-                st.session_state.tiempo_inicio = None
-                st.success("Juego detenido")
-                st.rerun()
-    
-    with tab2:
-        st.subheader("Resultados en Tiempo Real")
-        
-        if st.session_state.tiempo_inicio:
-            tiempo_restante = (st.session_state.tiempo_inicio + timedelta(minutes=st.session_state.duracion)) - datetime.now()
-            
-            if tiempo_restante.total_seconds() > 0:
-                st.metric("⏳ Tiempo restante", value=str(tiempo_restante).split(".")[0])
-            else:
-                st.error("⌛ El tiempo ha finalizado")
-        
-        resultados = obtener_resultados()
-        if resultados:
-            df = pd.DataFrame(resultados, columns=["Nombre", "Fecha/Hora"])
-            df["Posición"] = range(1, len(df)+1)
-            st.dataframe(df[["Posición", "Nombre", "Fecha/Hora"]], hide_index=True)
-        else:
-            st.info("No hay participantes aún.")
-
-# ----------------- MODO ESTUDIANTE -----------------
+# ----------------- MODO ESTUDIANTE MEJORADO -----------------
 def modo_estudiante():
     st.header("👩‍🎓 Modo Competidor")
     
@@ -265,22 +197,18 @@ def modo_estudiante():
     
     if not juego or not juego[2]:  # Si no hay juego activo
         st.warning("⌛ Esperando a que el docente inicie el juego...")
-        st.image("https://via.placeholder.com/600x200?text=Esperando+inicio+del+juego", use_column_width=True)
         return
     
-    # Actualizar estado desde la base de datos
-    st.session_state.problema = juego[0]
-    st.session_state.duracion = juego[1]
-    st.session_state.tiempo_inicio = datetime.strptime(juego[2], "%Y-%m-%d %H:%M:%S.%f") if isinstance(juego[2], str) else juego[2]
+    enunciado, duracion, tiempo_inicio = juego
     
     st.subheader("📋 Enunciado del Problema")
-    st.markdown(f"```\n{st.session_state.problema}\n```")
+    st.markdown(f"```\n{enunciado}\n```")
     
     # Mostrar tiempo restante
-    tiempo_restante = (st.session_state.tiempo_inicio + timedelta(minutes=st.session_state.duracion)) - datetime.now()
+    tiempo_restante = (tiempo_inicio + timedelta(minutes=duracion)) - datetime.now()
     
     if tiempo_restante.total_seconds() > 0:
-        st.metric("⏳ Tiempo restante", value=str(tiempo_restante).split(".")[0])
+        st.metric("⏳ Tiempo restante", value=format_timedelta(tiempo_restante))
     else:
         st.error("⌛ El tiempo se ha terminado!")
     
@@ -306,7 +234,6 @@ def modo_estudiante():
                     exito = insertar_resultado(nombre.strip())
                     if exito:
                         st.success(f"🎉 ¡Registrado como participante #{len(resultados)+1}!")
-                        st.balloons()
                         st.rerun()
                     else:
                         st.error("❌ Ya se han registrado los 3 primeros participantes")
@@ -315,40 +242,24 @@ def modo_estudiante():
     if resultados:
         st.subheader("🏆 Podio Actual")
         
-        # Crear tabla de posiciones
-        html = """
-        <table class="result-table">
-            <tr>
-                <th>Posición</th>
-                <th>Nombre</th>
-                <th>Hora de Finalización</th>
-            </tr>
-        """
+        # Usamos pandas para mostrar la tabla de forma más robusta
+        df = pd.DataFrame([
+            {
+                "Posición": f"{'🥇' if i==1 else '🥈' if i==2 else '🥉'} {i}º",
+                "Nombre": nombre,
+                "Hora": timestamp.strftime("%H:%M:%S") if timestamp else "N/A"
+            }
+            for i, (nombre, timestamp) in enumerate(resultados, start=1)
+        ])
         
-        for i, (nombre, timestamp) in enumerate(resultados, start=1):
-            tiempo = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S.%f") if isinstance(timestamp, str) else timestamp
-            tiempo_str = tiempo.strftime("%H:%M:%S")
-            
-            medal = ""
-            if i == 1: medal = "🥇"
-            elif i == 2: medal = "🥈"
-            elif i == 3: medal = "🥉"
-            
-            html += f"""
-            <tr>
-                <td>{medal} {i}º</td>
-                <td>{nombre}</td>
-                <td>{tiempo_str}</td>
-            </tr>
-            """
-        
-        html += "</table>"
-        st.markdown(html, unsafe_allow_html=True)
+        st.dataframe(df, hide_index=True, use_container_width=True)
 
 # ----------------- APLICACIÓN PRINCIPAL -----------------
 def main():
     init_db()
-    init_session_state()
+    
+    if "pantalla" not in st.session_state:
+        st.session_state.pantalla = None
     
     if st.session_state.pantalla is None:
         mostrar_inicio()
