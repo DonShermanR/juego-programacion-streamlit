@@ -53,7 +53,7 @@ if "problema" not in st.session_state:
 if "tiempo_inicio" not in st.session_state:
     st.session_state.tiempo_inicio = None
 if "duracion" not in st.session_state:
-    st.session_state.duracion = 0
+    st.session_state.duracion = 5  # duración por defecto
 
 init_db()
 
@@ -78,12 +78,12 @@ elif st.session_state.pantalla == "docente":
 
     col1, col2 = st.columns(2)
     with col1:
-        st.session_state.duracion = st.slider("⏳ Tiempo de resolución (minutos)", 1, 30, st.session_state.duracion or 5)
-
+        st.session_state.duracion = st.slider("⏳ Tiempo de resolución (minutos)", 1, 30, st.session_state.duracion)
     with col2:
         if st.button("🟢 Iniciar juego"):
             st.session_state.tiempo_inicio = datetime.now()
             reiniciar_resultados()
+            st.success("✅ Juego iniciado")
 
     if st.session_state.tiempo_inicio:
         tiempo_restante = (st.session_state.tiempo_inicio + timedelta(minutes=st.session_state.duracion)) - datetime.now()
@@ -101,7 +101,7 @@ elif st.session_state.pantalla == "docente":
         reiniciar_resultados()
         st.session_state.tiempo_inicio = None
         st.session_state.problema = ""
-        st.session_state.duracion = 0
+        st.session_state.duracion = 5
         st.session_state.pantalla = None
         st.rerun()
 
@@ -111,6 +111,9 @@ elif st.session_state.pantalla == "estudiante":
 
     if st.session_state.problema == "" or st.session_state.tiempo_inicio is None:
         st.warning("⛔ Aún no se ha iniciado ningún juego.")
+        if st.button("⬅️ Volver"):
+            st.session_state.pantalla = None
+            st.rerun()
     else:
         st.subheader("📘 Problema")
         st.markdown(f"### {st.session_state.problema}")
@@ -132,3 +135,7 @@ elif st.session_state.pantalla == "estudiante":
                 insertar_resultado(nombre.strip())
                 st.success("🎉 ¡Respuesta registrada!")
                 st.rerun()
+
+        if st.button("⬅️ Volver"):
+            st.session_state.pantalla = None
+            st.rerun()
