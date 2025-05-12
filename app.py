@@ -2,46 +2,40 @@ import streamlit as st
 import sqlite3
 import time
 from datetime import datetime, timedelta
-import hashlib
 import pandas as pd
 
 # ----------------- CONSTANTES -----------------
-MAX_JUGADORES = 5
+MAX_JUGADORES = 3
 DB_NAME = "resultados.db"
 
-# ----------------- INICIALIZAR BASE DE DATOS MEJORADA -----------------
+# ----------------- INICIALIZAR BASE DE DATOS -----------------
 def init_db():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     
-    # Tabla de resultados
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS resultados (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             nombre TEXT NOT NULL,
-            solucion TEXT,
-            correcto BOOLEAN DEFAULT 0,
             timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     """)
     
-    # Tabla de problemas
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS problemas (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+        CREATE TABLE IF NOT EXISTS juego_activo (
+            id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
             enunciado TEXT NOT NULL,
-            solucion_hash TEXT NOT NULL,
             duracion INTEGER NOT NULL,
-            activo BOOLEAN DEFAULT 0,
-            fecha_creacion DATETIME DEFAULT CURRENT_TIMESTAMP
+            tiempo_inicio DATETIME,
+            activo BOOLEAN DEFAULT 0
         )
     """)
     
     conn.commit()
     conn.close()
 
-# ----------------- FUNCIONES DE BASE DE DATOS MEJORADAS -----------------
-def insertar_resultado(nombre, solucion="", correcto=False):
+# ----------------- FUNCIONES DE BASE DE DATOS -----------------
+def insertar_resultado(nombre):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     
@@ -50,19 +44,23 @@ def insertar_resultado(nombre, solucion="", correcto=False):
     
     if count < MAX_JUGADORES:
         cursor.execute(
-            "INSERT INTO resultados (nombre, solucion, correcto) VALUES (?, ?, ?)",
-            (nombre, solucion, correcto)
+            "INSERT INTO resultados (nombre) VALUES (?)",
+            (nombre,)
         )
         conn.commit()
+        resultado = True
+    else:
+        resultado = False
     
     conn.close()
+    return resultado
 
 def obtener_resultados():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     
     cursor.execute("""
-        SELECT nombre, solucion, correcto, timestamp 
+        SELECT nombre, timestamp 
         FROM resultados 
         ORDER BY timestamp ASC 
         LIMIT ?
@@ -79,201 +77,203 @@ def reiniciar_resultados():
     conn.commit()
     conn.close()
 
-def guardar_problema(enunciado, solucion_hash, duracion):
+def iniciar_juego(enunciado, duracion):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     
-    # Desactivar todos los problemas anteriores
-    cursor.execute("UPDATE problemas SET activo = 0")
-    
-    # Insertar nuevo problema activo
-    cursor.execute(
-        "INSERT INTO problemas (enunciado, solucion_hash, duracion, activo) VALUES (?, ?, ?, 1)",
-        (enunciado, solucion_hash, duracion)
-    )
+    cursor.execute("""
+        INSERT OR REPLACE INTO juego_activo 
+        (id, enunciado, duracion, tiempo_inicio, activo)
+        VALUES (1, ?, ?, ?, 1)
+    """, (enunciado, duracion, datetime.now()))
     
     conn.commit()
     conn.close()
+    reiniciar_resultados()
 
-def obtener_problema_activo():
+def obtener_estado_juego():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     
-    cursor.execute("SELECT enunciado, solucion_hash, duracion FROM problemas WHERE activo = 1")
-    problema = cursor.fetchone()
+    cursor.execute("SELECT enunciado, duracion, tiempo_inicio FROM juego_activo WHERE activo = 1")
+    juego = cursor.fetchone()
     
     conn.close()
-    return problema
+    return juego
 
-def hash_solucion(solucion):
-    return hashlib.sha256(solucion.encode()).hexdigest()
+def finalizar_juego():
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    
+    cursor.execute("UPDATE juego_activo SET activo = 0 WHERE id = 1")
+    conn.commit()
+    conn.close()
 
-# ----------------- INICIALIZAR SESSION STATE MEJORADO -----------------
+# ----------------- INICIALIZAR SESSION STATE -----------------
 def init_session_state():
     if "pantalla" not in st.session_state:
         st.session_state.pantalla = None
     
-    if "problema" not in st.session_state:
-        problema = obtener_problema_activo()
-        if problema:
-            st.session_state.problema = problema[0]
-            st.session_state.solucion_hash = problema[1]
-            st.session_state.duracion = problema[2]
-        else:
-            st.session_state.problema = ""
-            st.session_state.solucion_hash = ""
-            st.session_state.duracion = 5
+    # Obtener estado del juego de la base de datos
+    juego = obtener_estado_juego()
     
-    if "tiempo_inicio" not in st.session_state:
+    if juego:
+        st.session_state.problema = juego[0]
+        st.session_state.duracion = juego[1]
+        st.session_state.tiempo_inicio = datetime.strptime(juego[2], "%Y-%m-%d %H:%M:%S.%f") if isinstance(juego[2], str) else juego[2]
+    else:
+        st.session_state.problema = ""
+        st.session_state.duracion = 5
         st.session_state.tiempo_inicio = None
-    
-    if "mostrar_solucion" not in st.session_state:
-        st.session_state.mostrar_solucion = False
 
-# ----------------- PANTALLA DE INICIO MEJORADA -----------------
+# ----------------- PANTALLA DE INICIO -----------------
 def mostrar_inicio():
-    st.title("🧠 Juego de Programación Competitiva")
+    st.title("🏆 Juego de Programación Competitiva")
+    
     st.markdown("""
         <style>
-            .big-button {
-                padding: 20px;
-                text-align: center;
-                font-size: 20px;
-                margin: 10px 0;
+            .big-font {
+                font-size:18px !important;
             }
             .result-table {
                 width: 100%;
                 border-collapse: collapse;
             }
-            .result-table th, .result-table td {
-                border: 1px solid #ddd;
-                padding: 8px;
-                text-align: left;
-            }
-            .result-table tr:nth-child(even) {
+            .result-table th {
                 background-color: #f2f2f2;
+                text-align: left;
+                padding: 8px;
+            }
+            .result-table td {
+                padding: 8px;
+                border-bottom: 1px solid #ddd;
+            }
+            .locked {
+                color: #ff4b4b;
+                font-weight: bold;
             }
         </style>
     """, unsafe_allow_html=True)
     
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("👨‍🏫 Modo Docente", key="docente_btn", help="Acceso para configurar el juego"):
+        if st.button("👨‍🏫 Modo Docente", key="docente_btn", help="Configurar el juego"):
             st.session_state.pantalla = "docente"
     with col2:
-        if st.button("👩‍🎓 Modo Estudiante", key="estudiante_btn", help="Acceso para participar en el juego"):
+        if st.button("👩‍🎓 Modo Estudiante", key="estudiante_btn", help="Participar en el juego"):
             st.session_state.pantalla = "estudiante"
     
     # Mostrar últimos resultados si existen
     resultados = obtener_resultados()
     if resultados:
-        st.subheader("🏆 Últimos Resultados")
-        df = pd.DataFrame(resultados, columns=["Nombre", "Solución", "Correcto", "Fecha/Hora"])
-        df["Correcto"] = df["Correcto"].apply(lambda x: "✅" if x else "❌")
-        st.dataframe(df[["Nombre", "Correcto", "Fecha/Hora"]], hide_index=True)
+        st.subheader("🏅 Podio Actual")
+        
+        # Crear tabla de posiciones
+        html = """
+        <table class="result-table">
+            <tr>
+                <th>Posición</th>
+                <th>Nombre</th>
+                <th>Hora de Finalización</th>
+            </tr>
+        """
+        
+        for i, (nombre, timestamp) in enumerate(resultados, start=1):
+            tiempo = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S.%f") if isinstance(timestamp, str) else timestamp
+            tiempo_str = tiempo.strftime("%H:%M:%S")
+            
+            html += f"""
+            <tr>
+                <td>{i}º</td>
+                <td>{nombre}</td>
+                <td>{tiempo_str}</td>
+            </tr>
+            """
+            
+            if i >= MAX_JUGADORES:
+                break
+        
+        html += "</table>"
+        st.markdown(html, unsafe_allow_html=True)
 
-# ----------------- MODO DOCENTE MEJORADO -----------------
+# ----------------- MODO DOCENTE -----------------
 def modo_docente():
     st.header("👨‍🏫 Panel del Docente")
     
-    tab1, tab2 = st.tabs(["📝 Configurar Juego", "📊 Resultados"])
+    tab1, tab2 = st.tabs(["⚙️ Configurar Juego", "📊 Resultados"])
     
     with tab1:
-        st.subheader("Configuración del Problema")
+        st.subheader("Configuración del Juego")
         
         enunciado = st.text_area(
             "Enunciado del problema", 
             st.session_state.problema, 
             height=150,
-            placeholder="Describa el problema de programación que los estudiantes deben resolver..."
+            placeholder="Describa el problema de programación..."
         )
         
-        solucion = st.text_area(
-            "Solución esperada (solo para verificación)", 
-            height=150,
-            placeholder="Escriba la solución correcta para validar las respuestas..."
+        duracion = st.slider(
+            "⏳ Duración (minutos)", 
+            1, 120, 
+            st.session_state.duracion
         )
         
         col1, col2 = st.columns(2)
         with col1:
-            duracion = st.slider(
-                "⏳ Duración (minutos)", 
-                1, 60, 
-                st.session_state.duracion if "duracion" in st.session_state else 5
-            )
+            if st.button("🟢 Iniciar Juego", type="primary"):
+                if not enunciado.strip():
+                    st.error("Debe ingresar un enunciado para el problema.")
+                else:
+                    iniciar_juego(enunciado, duracion)
+                    st.session_state.problema = enunciado
+                    st.session_state.duracion = duracion
+                    st.session_state.tiempo_inicio = datetime.now()
+                    st.success("✅ Juego iniciado correctamente!")
+                    st.balloons()
         
         with col2:
-            st.write("")
-            st.write("")
-            iniciar = st.button("🟢 Iniciar Juego", type="primary")
-        
-        if iniciar:
-            if not enunciado.strip():
-                st.error("Debe ingresar un enunciado para el problema.")
-            elif not solucion.strip():
-                st.error("Debe proporcionar una solución para verificar las respuestas.")
-            else:
-                # Guardar problema en la base de datos
-                solucion_hash = hash_solucion(solucion)
-                guardar_problema(enunciado, solucion_hash, duracion)
-                
-                # Actualizar estado
-                st.session_state.problema = enunciado
-                st.session_state.solucion_hash = solucion_hash
-                st.session_state.duracion = duracion
-                st.session_state.tiempo_inicio = datetime.now()
-                reiniciar_resultados()
-                
-                st.success("✅ Juego iniciado correctamente!")
-                st.balloons()
+            if st.button("⏹ Detener Juego"):
+                finalizar_juego()
+                st.session_state.tiempo_inicio = None
+                st.success("Juego detenido")
+                st.rerun()
     
     with tab2:
-        st.subheader("Resultados del Juego")
+        st.subheader("Resultados en Tiempo Real")
         
         if st.session_state.tiempo_inicio:
             tiempo_restante = (st.session_state.tiempo_inicio + timedelta(minutes=st.session_state.duracion)) - datetime.now()
             
             if tiempo_restante.total_seconds() > 0:
-                st.markdown(f"### ⏳ Tiempo restante: `{str(tiempo_restante).split('.')[0]}`")
-                time.sleep(1)
-                st.rerun()
+                st.metric("⏳ Tiempo restante", value=str(tiempo_restante).split(".")[0])
             else:
-                st.error("⏰ El tiempo ha finalizado.")
+                st.error("⌛ El tiempo ha finalizado")
         
         resultados = obtener_resultados()
         if resultados:
-            st.subheader("🏅 Ranking de Participantes")
-            
-            for i, (nombre, solucion, correcto, timestamp) in enumerate(resultados, start=1):
-                emoji = "✅" if correcto else "❌"
-                st.write(f"{i}. {emoji} {nombre} - {timestamp}")
-                
-                if st.session_state.mostrar_solucion:
-                    with st.expander(f"Ver solución de {nombre}"):
-                        st.code(solucion, language="python")
+            df = pd.DataFrame(resultados, columns=["Nombre", "Fecha/Hora"])
+            df["Posición"] = range(1, len(df)+1)
+            st.dataframe(df[["Posición", "Nombre", "Fecha/Hora"]], hide_index=True)
         else:
-            st.info("No hay resultados aún.")
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("🔄 Reiniciar Juego"):
-                reiniciar_resultados()
-                st.session_state.tiempo_inicio = None
-                st.rerun()
-        
-        with col2:
-            st.session_state.mostrar_solucion = st.toggle("Mostrar soluciones")
+            st.info("No hay participantes aún.")
 
-# ----------------- MODO ESTUDIANTE MEJORADO -----------------
+# ----------------- MODO ESTUDIANTE -----------------
 def modo_estudiante():
-    st.header("👩‍🎓 Modo Estudiante")
+    st.header("👩‍🎓 Modo Competidor")
     
-    if not st.session_state.problema or not st.session_state.tiempo_inicio:
-        st.warning("Esperando a que el docente inicie el juego...")
+    juego = obtener_estado_juego()
+    
+    if not juego or not juego[2]:  # Si no hay juego activo
+        st.warning("⌛ Esperando a que el docente inicie el juego...")
         st.image("https://via.placeholder.com/600x200?text=Esperando+inicio+del+juego", use_column_width=True)
         return
     
-    st.subheader("📖 Enunciado del Problema")
+    # Actualizar estado desde la base de datos
+    st.session_state.problema = juego[0]
+    st.session_state.duracion = juego[1]
+    st.session_state.tiempo_inicio = datetime.strptime(juego[2], "%Y-%m-%d %H:%M:%S.%f") if isinstance(juego[2], str) else juego[2]
+    
+    st.subheader("📋 Enunciado del Problema")
     st.markdown(f"```\n{st.session_state.problema}\n```")
     
     # Mostrar tiempo restante
@@ -282,39 +282,68 @@ def modo_estudiante():
     if tiempo_restante.total_seconds() > 0:
         st.metric("⏳ Tiempo restante", value=str(tiempo_restante).split(".")[0])
     else:
-        st.error("⏰ El tiempo se ha terminado!")
+        st.error("⌛ El tiempo se ha terminado!")
     
-    with st.form("form_solucion"):
-        nombre = st.text_input("👤 Nombre completo", placeholder="Ingrese su nombre completo")
-        
-        solucion = st.text_area(
-            "💻 Su solución", 
-            height=300,
-            placeholder="Escriba aquí su código solución...",
-            help="Puede escribir código en cualquier lenguaje, pero asegúrese de que resuelva el problema planteado."
-        )
-        
-        enviado = st.form_submit_button("🚀 Enviar solución")
-        
-        if enviado:
-            if not nombre.strip():
-                st.error("Debe ingresar su nombre")
-            elif not solucion.strip():
-                st.error("Debe escribir una solución")
-            elif tiempo_restante.total_seconds() <= 0:
-                st.error("El tiempo ha terminado, no se pueden enviar más soluciones")
-            else:
-                # Verificar si la solución es correcta
-                solucion_correcta = hash_solucion(solucion) == st.session_state.solucion_hash
-                insertar_resultado(nombre, solucion, solucion_correcta)
-                
-                if solucion_correcta:
-                    st.success("🎉 ¡Solución correcta! Bien hecho!")
-                    st.balloons()
+    # Verificar si ya hay 3 participantes
+    resultados = obtener_resultados()
+    bloqueado = len(resultados) >= MAX_JUGADORES
+    
+    if bloqueado:
+        st.error("❌ El juego ya tiene los 3 primeros finalistas. No se aceptan más participantes.")
+    else:
+        with st.form("form_participante"):
+            nombre = st.text_input("👤 Nombre completo", placeholder="Ingrese su nombre completo")
+            
+            enviado = st.form_submit_button(
+                "🏁 Finalizar y Registrar", 
+                disabled=tiempo_restante.total_seconds() <= 0 or bloqueado
+            )
+            
+            if enviado:
+                if not nombre.strip():
+                    st.error("Debe ingresar su nombre")
                 else:
-                    st.warning("⚠️ Solución enviada, pero no coincide con la solución esperada.")
-                
-                st.rerun()
+                    exito = insertar_resultado(nombre.strip())
+                    if exito:
+                        st.success(f"🎉 ¡Registrado como participante #{len(resultados)+1}!")
+                        st.balloons()
+                        st.rerun()
+                    else:
+                        st.error("❌ Ya se han registrado los 3 primeros participantes")
+
+    # Mostrar podio actual
+    if resultados:
+        st.subheader("🏆 Podio Actual")
+        
+        # Crear tabla de posiciones
+        html = """
+        <table class="result-table">
+            <tr>
+                <th>Posición</th>
+                <th>Nombre</th>
+                <th>Hora de Finalización</th>
+            </tr>
+        """
+        
+        for i, (nombre, timestamp) in enumerate(resultados, start=1):
+            tiempo = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S.%f") if isinstance(timestamp, str) else timestamp
+            tiempo_str = tiempo.strftime("%H:%M:%S")
+            
+            medal = ""
+            if i == 1: medal = "🥇"
+            elif i == 2: medal = "🥈"
+            elif i == 3: medal = "🥉"
+            
+            html += f"""
+            <tr>
+                <td>{medal} {i}º</td>
+                <td>{nombre}</td>
+                <td>{tiempo_str}</td>
+            </tr>
+            """
+        
+        html += "</table>"
+        st.markdown(html, unsafe_allow_html=True)
 
 # ----------------- APLICACIÓN PRINCIPAL -----------------
 def main():
