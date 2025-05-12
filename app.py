@@ -348,6 +348,7 @@ def main():
     """Función principal de la aplicación"""
     init_db()
     
+    # Inicialización del estado de la sesión
     if "pantalla" not in st.session_state:
         st.session_state.pantalla = None
     if "problema" not in st.session_state:
@@ -357,6 +358,7 @@ def main():
     if "tiempo_inicio" not in st.session_state:
         st.session_state.tiempo_inicio = None
     
+    # Navegación entre pantallas
     if st.session_state.pantalla is None:
         mostrar_inicio()
     elif st.session_state.pantalla == "docente":
