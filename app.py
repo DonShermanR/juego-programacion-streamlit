@@ -1,79 +1,134 @@
 import streamlit as st
+import sqlite3
 import time
+from datetime import datetime, timedelta
 
-# Inicialización segura del estado de sesión
-if "posiciones" not in st.session_state:
-    st.session_state["posiciones"] = []
+# Inicializar la base de datos SQLite
+def init_db():
+    conn = sqlite3.connect("resultados.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS resultados (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nombre TEXT NOT NULL,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.commit()
+    conn.close()
 
+# Insertar un resultado
+def insertar_resultado(nombre):
+    conn = sqlite3.connect("resultados.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM resultados")
+    count = cursor.fetchone()[0]
+    if count < 3:  # Solo se aceptan 3 resultados
+        cursor.execute("INSERT INTO resultados (nombre) VALUES (?)", (nombre,))
+        conn.commit()
+    conn.close()
+
+# Obtener resultados
+def obtener_resultados():
+    conn = sqlite3.connect("resultados.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT nombre, timestamp FROM resultados ORDER BY timestamp ASC LIMIT 3")
+    resultados = cursor.fetchall()
+    conn.close()
+    return resultados
+
+# Resetear base de datos
+def reiniciar_resultados():
+    conn = sqlite3.connect("resultados.db")
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM resultados")
+    conn.commit()
+    conn.close()
+
+# Inicializar session_state
+if "pantalla" not in st.session_state:
+    st.session_state.pantalla = None
 if "problema" not in st.session_state:
-    st.session_state["problema"] = ""
+    st.session_state.problema = ""
+if "tiempo_inicio" not in st.session_state:
+    st.session_state.tiempo_inicio = None
+if "duracion" not in st.session_state:
+    st.session_state.duracion = 0
 
-if "start_time" not in st.session_state:
-    st.session_state["start_time"] = None
+init_db()
 
-# Función para reiniciar el juego
-def reiniciar_juego():
-    st.session_state["posiciones"] = []
-    st.session_state["problema"] = ""
-    st.session_state["start_time"] = None
-    st.experimental_rerun()
+# ---------------------- PANTALLA DE INICIO -------------------------
+st.title("🧠 Juego de Programación")
 
-# Título principal
-st.title("Juego de Programación 🎯")
-
-# Sección del problema
-st.subheader("🧩 Enunciado del problema")
-
-# Text area para ingresar o mostrar el problema
-problema = st.text_area("Escribe el problema aquí:", value=st.session_state["problema"], height=150, key="problema_area")
-
-# Botón para iniciar el problema
-if st.button("🚀 Iniciar ejercicio"):
-    st.session_state["problema"] = problema
-    st.session_state["start_time"] = time.time()
-    st.success("¡Ejercicio iniciado!")
-
-# Mostrar enunciado si ya fue definido
-if st.session_state["problema"]:
-    st.info(f"📝 Enunciado actual:\n\n{st.session_state['problema']}")
-
-# Temporizador (solo si se inició el ejercicio)
-if st.session_state["start_time"]:
-    tiempo_transcurrido = int(time.time() - st.session_state["start_time"])
-    minutos = tiempo_transcurrido // 60
-    segundos = tiempo_transcurrido % 60
-    st.markdown(f"⏱️ Tiempo transcurrido: **{minutos:02d}:{segundos:02d}**")
-
-st.divider()
-
-# Ingreso del nombre del estudiante
-st.subheader("✅ Marca cuando termines")
-nombre = st.text_input("Tu nombre:", max_chars=50)
-
-# Lista de posiciones
-st.subheader("🏆 Posiciones actuales:")
-for i, participante in enumerate(st.session_state["posiciones"]):
-    col1, col2 = st.columns([4, 1])
+if st.session_state.pantalla is None:
+    col1, col2 = st.columns(2)
     with col1:
-        st.write(f"{i+1}. {participante}")
+        if st.button("👨‍🏫 Docente"):
+            st.session_state.pantalla = "docente"
     with col2:
-        if st.button("❌", key=f"del_{i}"):
-            st.session_state["posiciones"].pop(i)
-            st.experimental_rerun()
+        if st.button("👩‍🎓 Estudiante"):
+            st.session_state.pantalla = "estudiante"
 
-# Botón para registrar finalización del estudiante
-if st.button("¡Terminé! ✅"):
-    if not nombre:
-        st.warning("Por favor, escribe tu nombre antes de presionar el botón.")
-    elif nombre in st.session_state["posiciones"]:
-        st.info("Ya estás en la lista.")
-    elif len(st.session_state["posiciones"]) >= 5:
-        st.error("Ya hay 5 estudiantes en la lista.")
+# ---------------------- DOCENTE -------------------------
+elif st.session_state.pantalla == "docente":
+    st.header("👨‍🏫 Modo Docente")
+
+    st.subheader("📝 Ingrese el enunciado del problema")
+    st.session_state.problema = st.text_area("Problema", st.session_state.problema, height=100)
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.session_state.duracion = st.slider("⏳ Tiempo de resolución (minutos)", 1, 30, st.session_state.duracion or 5)
+
+    with col2:
+        if st.button("🟢 Iniciar juego"):
+            st.session_state.tiempo_inicio = datetime.now()
+            reiniciar_resultados()
+
+    if st.session_state.tiempo_inicio:
+        tiempo_restante = (st.session_state.tiempo_inicio + timedelta(minutes=st.session_state.duracion)) - datetime.now()
+        if tiempo_restante.total_seconds() > 0:
+            st.info(f"⏱ Tiempo restante: {str(tiempo_restante).split('.')[0]}")
+        else:
+            st.warning("⏳ Tiempo finalizado")
+
+    st.subheader("🏁 Resultados:")
+    resultados = obtener_resultados()
+    for i, (nombre, timestamp) in enumerate(resultados, start=1):
+        st.success(f"{i}. {nombre} ({timestamp})")
+
+    if st.button("🔄 Reiniciar juego"):
+        reiniciar_resultados()
+        st.session_state.tiempo_inicio = None
+        st.session_state.problema = ""
+        st.session_state.duracion = 0
+        st.session_state.pantalla = None
+        st.rerun()
+
+# ---------------------- ESTUDIANTE -------------------------
+elif st.session_state.pantalla == "estudiante":
+    st.header("👩‍🎓 Modo Estudiante")
+
+    if st.session_state.problema == "" or st.session_state.tiempo_inicio is None:
+        st.warning("⛔ Aún no se ha iniciado ningún juego.")
     else:
-        st.session_state["posiciones"].append(nombre)
-        st.success(f"¡Registrado, {nombre}! Estás en la posición #{len(st.session_state['posiciones'])}")
+        st.subheader("📘 Problema")
+        st.markdown(f"### {st.session_state.problema}")
 
-# Botón para reiniciar todo
-st.divider()
-if st.button("🔁 Reiniciar todo (nuevo problema)"):
-    reiniciar_juego()
+        tiempo_restante = (st.session_state.tiempo_inicio + timedelta(minutes=st.session_state.duracion)) - datetime.now()
+        if tiempo_restante.total_seconds() > 0:
+            st.info(f"⏱ Tiempo restante: {str(tiempo_restante).split('.')[0]}")
+        else:
+            st.error("⛔ El tiempo se ha terminado")
+
+        nombre = st.text_input("✍️ Escriba su nombre y apellido")
+
+        if st.button("✅ Terminé"):
+            if nombre.strip() == "":
+                st.warning("⚠️ Debe ingresar su nombre.")
+            elif tiempo_restante.total_seconds() <= 0:
+                st.error("⚠️ Tiempo terminado. No se puede registrar.")
+            else:
+                insertar_resultado(nombre.strip())
+                st.success("🎉 ¡Respuesta registrada!")
+                st.rerun()
